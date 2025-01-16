@@ -17,10 +17,8 @@ jobs:
     strategy:
       matrix:
         elixir:
-          - "1.11"
-          - "1.12"
+          - "1.17.2"
         otp:
-          - "23"
           - "24"
 
     steps:
