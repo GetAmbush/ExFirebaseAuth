@@ -43,12 +43,51 @@ defmodule ExFirebaseAuth.Token do
       iex> ExFirebaseAuth.Token.verify_token("ey.some.token", :my_app)
       {:ok, "user id", %{}}
 
+      iex> ExFirebaseAuth.Token.verify_token("ey.some.token", "google.myissuer")
+      {:ok, "user id", %{}}
+
       iex> ExFirebaseAuth.Token.verify_token("ey.some.token")
       {:error, "Invalid JWT header, `kid` missing"}
   """
-  def verify_token(token_string, app \\ @default_app) do
+  def verify_token(token_string, app \\ @default_app)
+
+  def verify_token(token_string, app) when is_atom(app) do
     issuer = issuer(app)
 
+    with {:jwtheader, %{fields: %{"kid" => kid}}} <- peek_token_kid(token_string),
+         # read key from store
+         {:key, %JOSE.JWK{} = key} <- {:key, get_public_key(kid)},
+         # check if verify returns true and issuer matches
+         {:verify, {true, %{fields: %{"iss" => ^issuer, "sub" => sub, "exp" => exp}} = data, _}} <-
+           {:verify, JOSE.JWT.verify(key, token_string)},
+         # Verify exp date
+         {:verify, {:ok, _}} <- {:verify, verify_expiry(exp)} do
+      {:ok, sub, data}
+    else
+      :invalidjwt ->
+        {:error, "Invalid JWT"}
+
+      {:jwtheader, _} ->
+        {:error, "Invalid JWT header, `kid` missing"}
+
+      {:key, _} ->
+        {:error, "Public key retrieved from google was not found or could not be parsed"}
+
+      {:verify, {false, _, _}} ->
+        {:error, "Invalid signature"}
+
+      {:verify, {true, _, _}} ->
+        {:error, "Signed by invalid issuer"}
+
+      {:verify, {:expired, _}} ->
+        {:error, "Expired JWT"}
+
+      {:verify, _} ->
+        {:error, "None of public keys matched auth token's key ids"}
+    end
+  end
+
+  def verify_token(token_string, issuer) when is_binary(issuer) do
     with {:jwtheader, %{fields: %{"kid" => kid}}} <- peek_token_kid(token_string),
          # read key from store
          {:key, %JOSE.JWK{} = key} <- {:key, get_public_key(kid)},
@@ -89,9 +128,10 @@ defmodule ExFirebaseAuth.Token do
   end
 
   defp verify_expiry(exp) do
-    cond do
-      exp > DateTime.utc_now() |> DateTime.to_unix() -> {:ok, exp}
-      true -> {:expired, exp}
-    end
+    now = DateTime.utc_now() |> DateTime.to_unix()
+
+    if exp > now,
+      do: {:ok, exp},
+      else: {:expired, exp}
   end
 end
